@@ -1,0 +1,366 @@
+---
+title: "DADA2_Muriqui microbiome"
+date: "February 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r}
+
+library(dada2)
+library(ggplot2)
+library(phyloseq)
+library(vegan)
+library(RColorBrewer)
+library(DESeq2)
+library(microbiome)
+library(gridExtra)
+library(Matrix)
+library(ShortRead)
+library(decontam)
+
+```
+
+
+```{r}
+
+path <- "../Muriqui-all_files/"
+list.files(path)
+
+```
+
+# Specify routes to files
+
+
+```{r}
+
+  #Sort ensures forward/reverse reads are in same order
+  fnFs <- sort(list.files(path, pattern="_R1_001.fastq"))
+  fnRs <- sort(list.files(path, pattern="_R2_001.fastq"))
+
+  #Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+  sample.names <- sapply(strsplit(fnFs, "_S"), '[', 1)
+
+  #Specify the full path to the fnFs and fnRs
+  fnFs <- file.path(path, fnFs)
+  fnRs <- file.path(path, fnRs)
+
+```
+
+# Inspect sequence quality scores (similar to fastqc)
+
+```{r}
+
+  plotQualityProfile(fnFs[1:8]) # forward reads of first 8 samples
+  plotQualityProfile(fnRs[1:8]) # reverse reads of first 8 samples
+
+```
+
+#FILTERING AND TRIMMING
+
+```{r}
+
+
+  #File Path Admin
+  filt_path <- file.path(path, "filtered")
+
+  #Place filtered files in filtered/ subdirectory
+  filtFs <- file.path(filt_path, paste0(sample.names, "_F_filt.fastq.gz"))
+  filtRs <- file.path(filt_path, paste0(sample.names, "_R_filt.fastq.gz"))
+
+  #Filter and Trim
+  out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,200),
+                       maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                       compress=TRUE, multithread=FALSE)
+  head(out)
+  
+```
+
+#####
+
+```{r}
+
+filtFs <- sort(list.files(filt_path, pattern="_F_filt.fastq.gz"))
+filtRs <- sort(list.files(filt_path, pattern="_R_filt.fastq.gz"))
+
+sample.names <- sapply(strsplit(filtFs, "_"), '[', 1)
+
+head(sample.names)
+
+filtFs <- file.path(filt_path, filtFs)
+filtRs <- file.path(filt_path, filtRs)
+
+```
+#####
+
+```{r}
+
+#LEARNING ERROR RATES
+
+  errF <- learnErrors(filtFs, multithread=TRUE)
+
+  errR <- learnErrors(filtRs, multithread=TRUE)
+
+    #Plot Error Rates
+      plotErrors(errF, nominalQ=TRUE)
+      plotErrors(errR, nominalQ=TRUE)
+      
+
+```
+
+
+```{r}
+
+#DEREPLICATION / IDENTIFIYNG UNIQUE SEQUENCES
+
+  derepFs <- derepFastq(filtFs, verbose=TRUE)
+  derepRs <- derepFastq(filtRs, verbose=TRUE)
+
+  #Name the derep-class objects by the sample names
+  names(derepFs) <- sample.names
+  names(derepRs) <- sample.names
+  
+
+```
+
+
+```{r}
+
+#INFERENCE OF SEQUENCE VARIANTS IN EACH SAMPLE
+
+  #F
+  dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+
+  #R
+  dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+  
+
+```
+
+
+
+```{r}
+
+  dadaRs[[1]]
+
+```
+
+
+
+
+```{r}
+
+#MERGE PAIRED READS
+
+      mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+      # Inspect the merger data.frame from the first sample
+      head(mergers[[1]])
+
+
+```
+
+
+
+```{r}
+
+      seqtab <- makeSequenceTable(mergers)
+
+      #Distribution of Sequence Lengths - v4.16S should be around 250, so trim anything outside of 240-260 range.
+      table(nchar(getSequences(seqtab)))
+
+```
+
+
+
+
+
+```{r}
+
+ #How many over 260
+      sizedist <- data.frame(t(table(nchar(getSequences(seqtab)))))
+      filtseqs <- sum(sizedist[,3][which(as.numeric(as.character(sizedist[,2]))>260)])
+      filtseqs/sum(sizedist[,3])
+
+```
+
+
+```{r}
+
+#Strip Out Sequences that Are Over the Expected Length
+      seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% seq(240,260)]
+      table(nchar(getSequences(seqtab2)))
+
+```
+
+
+
+```{r}
+
+#REMOVE CHIMERA
+
+      seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE)
+      dim(seqtab.nochim)
+
+      #% Sequences Removed
+      1-sum(seqtab.nochim)/sum(seqtab2)
+
+```
+
+
+
+```{r}
+
+getN <- function(x) sum(getUniques(x))
+      track <- cbind(out, sapply(dadaFs, getN), sapply(mergers, getN), rowSums(seqtab2), rowSums(seqtab.nochim))
+      colnames(track) <- c("input", "filtered", "denoised", "merged", "tabled", "nonchim")
+      rownames(track) <- sample.names
+      head(track)
+
+```
+
+
+```{r}
+
+ #Genera
+      tt <- assignTaxonomy(seqtab.nochim, "../Reference_databases/silva_nr_v132_train_set.fa", multithread = TRUE)
+      unname(head(tt))
+
+```
+
+```{r}
+
+tt.plus <- addSpecies(tt, "../Reference_databases/silva_species_assignment_v132.fa", verbose=TRUE)
+
+```
+
+
+
+```{r}
+
+#mock.ref <- getSequences(file.path("./Reference_databases/HMP_MOCK.v35.fasta"))# Sam's mock community
+mock.ref <- getSequences(file.path("../Reference_databases/16S_Zymo.fasta"))  #Zymo Mock community 
+
+unqs.mock <- seqtab.nochim["MOCK",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Drop ASVs absent in the Mock
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+
+```
+
+
+```{r}
+
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+
+```
+
+
+
+```{r}
+
+library(stringr)			
+			
+tax.clean <- as.data.frame(tt.plus)
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+tax.clean[is.na(tax.clean)] <- "" # if the values in this dataframe is NA, replace with blank i.e. ""
+
+for (i in 1:nrow(tax.clean)){
+  
+  #Fill in missing taxonomy
+  
+  if (tax.clean[i,2] == ""){
+    kingdom <- paste("Kingdom_", tax.clean[i,1], sep = "")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i,3] == ""){
+    phylum <- paste("Phylum_", tax.clean[i,2], sep = "")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i,4] == ""){
+    class <- paste("Class_", tax.clean[i,3], sep = "")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i,5] == ""){
+    order <- paste("Order_", tax.clean[i,4], sep = "")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i,6] == ""){
+    family <- paste("Family_", tax.clean[i,5], sep = "")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i,7] == ""){
+    tax.clean$Species[i] <- paste("Genus",tax.clean$Genus[i], sep = "_")
+  }
+}
+
+tax.clean$sequence <- rownames(tax.clean) # Add a new column to contain the actual sequence of each SV(OTU)
+mat <- as.matrix(tax.clean)
+
+```
+
+
+```{r}
+
+ #Tidying Up Sample Data
+              samples.out <- data.frame(Sample=rownames(seqtab.nochim))
+
+            #Import sample dataset
+            library(readr)
+
+            Sample_data <- read_csv("../SampleSheet16Sfull_MURIQUI.csv")
+            View(Sample_data)
+
+              sample.info <- Sample_data
+              head(sample.info)
+
+            #Samples as factor
+              sample.info$Sample <- as.factor(sample.info$Sample)
+
+            #Others as factors
+      sample.info$Sample <- as.factor(sample.info$Sample)
+      sample.info$mtDNA <- as.factor(sample.info$mtDNA)
+      sample.info$`Sample condition` <- as.factor(sample.info$`Sample condition`)
+      sample.info$Location <- as.factor(sample.info$Location)
+      sample.info$Substrate <- as.factor(sample.info$Substrate)
+      
+
+            #Merge the Sample ID data from dada2 with the metadata
+              sample.merge <- merge(sample.info,samples.out,by="Sample",all.y=TRUE)
+              nrow(sample.merge)
+              rownames(sample.merge) <- sample.merge$Sample
+
+```
+
+
+
+```{r}
+
+library(phyloseq)
+library(ggplot2)
+			  
+ps_muriqui <- phyloseq(tax_table(mat), sample_data(sample.merge), otu_table(seqtab.nochim, taxa_are_rows = FALSE))
+
+```
+
+
+```{r}
+
+
+taxa_names(ps_muriqui) <- paste("SV",seq(nrow(mat)))
+
+tax_table(ps_muriqui)[1:10,]
+
+
+```
+
+
+```{r}
+
+save(ps_muriqui, file="PS-Phyloseq_muriqui.RData")
+
+```
+
+
+
+  
+  

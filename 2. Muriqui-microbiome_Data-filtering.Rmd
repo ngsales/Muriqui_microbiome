@@ -1,0 +1,662 @@
+---
+title: "2. Muriqui-microbiome_Data-filtering"
+author: "Naiara Sales"
+date: "16/02/2022"
+Input data: ‘PS-Phyloseq_muriqui.RData’
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(phyloseq)
+library(dada2)
+library(decontam)
+library(vegan)
+library(ggplot2)
+library(microbiome)
+library(stringr)
+library(dplyr)
+
+```
+
+#### After initial filtering steps, continue analysis to check mock communities and negative samples and remove contaminants. 
+
+1. Check Mock Community 
+
+```{r}
+
+mock = subset_samples(ps_muriqui, Sample == "MOCK")
+mock <- prune_taxa(taxa_sums(mock) > 1, mock) # keeps taxa that were observed at least once in the mock community
+taxa_names(mock) # lists the SVs in the mock community
+taxa_sums(mock) # lists the read count of each SV found in the mock community
+
+````
+
+
+```{r} 
+
+unqs.mock <- tax_table(mock)[,"sequence"]
+mock.ref <- getSequences(file.path("../Reference_databases/16S_Zymo.fasta"))
+match.ref <- sum(sapply(unqs.mock, function(x) any(grepl(x,mock.ref))))
+
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+
+
+`````
+
+```{r}
+nam <- taxa_names(mock)
+tab <- as.data.frame(cbind(tax_table(mock)[,1:7],
+                           mock_read_count = taxa_sums(mock),
+                           total_read_count = taxa_sums(ps_muriqui)[nam]))
+#tab$prev <- NA
+for (i in 1:length(nam)){
+  tab$prev[i] <- sum(otu_table(ps_muriqui)[,nam[i]] > 0) # I don't like
+this loop. There must be a way for apply()
+}
+View(tab)
+```
+
+2. Remove contaminants (decontam)
+
+```{r}
+sample_data(ps_muriqui)$is.neg <- sample_data(ps_muriqui)$Control == "Yes"
+contamdf.prev <- isContaminant(ps_muriqui,
+                               method="prevalence",
+                               threshold = 0.1, # default value,
+                               neg="is.neg")
+
+table(contamdf.prev$contaminant)
+
+
+```
+
+# Compare Contaminants vs True SVs
+```{r}
+
+true samples
+ps.pa <- transform_sample_counts(ps_muriqui, function(abund) 1*(abund>0))
+ps.pa.neg <- prune_samples(sample_data(ps.pa)$Control == "Yes",
+ps.pa)
+ps.pa.pos <- prune_samples(sample_data(ps.pa)$Control == "No",
+ps.pa)
+
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos),
+pa.neg=taxa_sums(ps.pa.neg),
+                    contaminant=contamdf.prev$contaminant)
+
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) +
+geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True
+Samples)")
+
+```
+```{r}
+
+NOT RELEVANT FOR MURIQUI DATA - REMOVE
+
+## Assign column to identify SVs identified as a contaminant
+#tax_table(ps_muriqui) <- cbind(tax_table(ps_muriqui), contaminant =
+#contamdf.prev$contaminant) # adds contaminant TRUE or FALSE column
+#to taxa_table
+
+#df <- as.data.frame(tax_table(phylo))
+#cont <- which(contamdf.prev$contaminant)
+#con_table <- as.data.frame(tax_table(ps_muriqui)[cont,2:7])
+#for (i in 1:length(cont)){
+#  con_table$prev[i] <- sum(otu_table(ps_muriqui)[,cont[i]] > 0)
+#  con_table$count[i] <- taxa_sums(ps_muriqui)[cont[i]]
+#}
+#table(con_table, caption = "List of MOTUs identified by 'decontam as contaminants")
+```
+
+3. NEGATIVE CONTROLS (BLANKS)
+#CHECK WHAT WAS DETECTED IN THE BLANKS (Check carefully!!!!)
+```{r}
+PB1 = subset_samples(ps_muriqui, Sample == "PB1")
+PB2 = subset_samples(ps_muriqui, Sample == "PB2")
+PB1 <- prune_taxa(taxa_sums(PB1)>0, PB1)
+exnam <- taxa_names(PB1)
+exnam <- taxa_names(prune_taxa(taxa_sums(PB1)>0, PB1))
+
+blnknam <- unique(c(PB1, PB2))
+df <- as.data.frame(cbind(tax_table(ps_muriqui)[blnknam,c(7,9)],
+                          total_read_count = taxa_sums(ps_muriqui)
+[blnknam]))
+for (i in 1:length(blnknam)){
+  df$tot_prev[i] <- sum(otu_table(ps_muriqui)[,blnknam[i]] > 0) # I don't
+like this loop. There must be a way for apply()
+  df$ex_count[i] <- taxa_sums(PB1)[blnknam[i]]
+  df$ex_prev[i] <- sum(otu_table(PB1)[,blnknam[i]] > 0)
+  df$pcr_count[i] <- taxa_sums(PB2)[blnknam[i]]
+  df$pcr_prev[i] <- sum(otu_table(PB2)[,blnknam[i]] > 0)
+}
+kable(df, caption="Whats in each of the blanks")
+
+
+
+
+cntrl = subset_samples(ps_muriqui, Control == "Yes")
+cntrl <- prune_taxa(taxa_sums(cntrl) > 0, cntrl)
+nam <- taxa_names(cntrl)
+
+tab <- data.frame(cbind(tax_table(cntrl)[,c(2,3,4,5,6,7,9)],
+                        neg_read_count = taxa_sums(cntrl),
+                        total_read_count = taxa_sums(ps_muriqui)[nam]),
+                  stringsAsFactors = FALSE)
+for (i in 1:length(nam)){
+  tab$prev[i] <- sum(otu_table(ps_muriqui)[,nam[i]] > 0) 
+  x <- as.numeric(tab[i,"neg_read_count"])
+  #x <- as.numeric(tab$neg_read_count[i])
+  y <- as.numeric(tab[i,"total_read_count"])
+  #y <- as.numeric(tab$total_read_count[i])
+  tab$perc[i] <- (x/y) * 100
+}
+tab.nam <- tab[,"perc"] > 0.1 # 1 is for 1%
+tab.df <- tab[which(tab.nam),]
+kable(tab.df,
+      caption = "List of MOTUs with higher than 0.1% of total reads in negative controls")
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove
+ps_muriqui <- subset_taxa(mrps, !(taxa_names(mrps) %in% removeTaxa)) # for other datasets might include another filename here 
+ps_muriqui
+```
+4. Filter non-bacteria and SVs from controls 
+
+```{r}
+ps_muriqui_filtered <- subset_samples(ps_muriqui, Sample != "MOCK" & Sample != "PB1" & Sample != "PB3")
+
+# Remove SVs that are not Bacteria
+
+
+ps_muriqui_filtered <- subset_taxa(ps_muriqui_filtered,
+                     Kingdom == "Bacteria" &
+                       Family != "Kingdom_Bacteria" &
+                       Family  != "mitochondria" &
+                       Family  != "Mitochondria" &
+                       Class != "Chloroplast" &
+                       Order != "Chloroplast")
+
+save(ps_muriqui_filtered, file="PS_muriqui-filtered2.RData")
+
+
+
+
+```
+
+5. Rarefaction curves
+
+#Rarefaction curve
+```{r}
+set.seed(10)
+n <- sample(sample_names(ps_muriqui_filtered), 55)
+rfdf <- as.matrix(otu_table(ps_muriqui_filtered)[n,])
+
+rr.curv <- rarecurve(rfdf, sample= c(5000,10000), col="blue", label = TRUE)
+
+total_reads <- rowSums(rfdf@.Data)
+total_reads
+save(rr.curv, file = "./rarefaction_curve.RData") 
+
+## Samples with the lowest amount of reads - MC102 (5950 reads) and MC32 (12300 reads). Sample MC32 has 12300 reads and has reached plateau (as sample MC102 only had 5950 reads it will be removed after rarefying samples)
+```
+
+# Rarefaction (rarefying without replacement)
+```{r}
+
+ps.muriqui.rarefied <- rarefy_even_depth(ps_muriqui_filtered, rngseed = 4, sample.size = 12250, replace = F)
+save(ps.muriqui.rarefied, file="3.PS_muriqui-rarefied.RData")
+
+#ps_muriqui_filtered <- prune_samples(sample_sums(ps_muriqui_filtered) > 66, ps_muriqui_filtered) #remove samples with less than X reads. Not used as samples with less the minimum required in rarefaction are already removed 
+
+```
+
+# Filter ASVs with less than 0.01% of abundance # This step was used in conjunction with the rarefaction 
+# In this case, ASVs with less than 66 reads in total 
+
+```{r}
+ps.muriqui.rarefied.abund <- subset_taxa(ps.muriqui.rarefied,
+                      Phylum != "Kingdom_Bacteria" &
+                       Phylum != "Acidobacteria" & # 2 reads
+                       Phylum != "Deferribacteres" & # 55 reads
+                       Phylum != "Fusobacteria" & # 10 reads
+                       Phylum != "Patescibacteria" & # 6 reads
+                       Phylum != "Planctomycetes" & # 3 reads
+                       Phylum != "Spirochaetes" & # 35 reads
+                       Phylum != "Verrucomicrobia") # 6 reads
+
+ps.muriqui.rarefied.abund
+save(ps.muriqui.rarefied.abund, file="PS_muriqui-rarefied-abund.RData")
+
+ps.muriqui.rarefied.abund= subset_samples(ps.muriqui.rarefied.abund, Sample != "MC115")# remove the isolated female (group containing only one individual)
+```
+
+6. Analyses 
+
+# Accumulation curves before and after rarefaction 
+```{r}
+#before rarefaction (file rfdf)
+aurora.specaccum <- specaccum(rfdf[,],method = "rarefaction") #build the species accumulation curve & rarefaction curve (expected)
+
+aurora.specaccum.rand <- specaccum(rfdf[,], "random") #build a expected curve (randomization for boxplot comparison)
+
+plot(aurora.specaccum.rand,ci.type="poly",
+     col="blue", lwd=2, ci.lty=0, ci.col="lightblue",
+     xlab = "Number of Samples", ylab = "Number of Taxa") #plot both curves ("observed" vs "randomized")
+
+#######################
+
+#after rarefaction
+n2 <- sample(sample_names(ps.muriqui.rarefied), 54)
+rfdf2 <- as.matrix(otu_table(ps.muriqui.rarefied)[n2,])
+
+aurora.specaccum <- specaccum(rfdf2[,],method = "rarefaction") #build the species accumulation curve & rarefaction curve (expected)
+
+aurora.specaccum.rand <- specaccum(rfdf2[,], "random") #build a expected curve (randomization for boxplot comparison)
+
+plot(aurora.specaccum.rand,ci.type="poly",
+     col="blue", lwd=2, ci.lty=0, ci.col="lightblue",
+     xlab = "Number of Samples", ylab = "Number of Taxa") #plot both curves ("observed" vs "randomized")
+
+
+```
+
+# Plot Abundances Phylum
+```{r, echo=FALSE}
+plot_bar(ps.muriqui.rarefied, fill="Phylum")
+plot_bar(ps.muriqui.rarefied, fill="Phylum") + facet_wrap(~Location, scales="free_x", nrow=1)
+
+#We can merge SVs at the phylum level and build a new phyloseq object - it merges the SVs with the same taxonomy and sum the abundances
+
+ps.phylum = tax_glom(ps.muriqui.rarefied, taxrank="Phylum", NArm=FALSE)
+ps.phylum
+
+# Same after removing Phylum with less than 0.01% of abundance
+ps.phylum.abund = tax_glom(ps.muriqui.rarefied.abund, taxrank="Phylum", NArm=FALSE)
+ps.phylum.abund
+
+
+#library("colorspace")
+#pal <- choose_palette()
+#pal2 <- pal(2)
+#MyPalette <- c(
+          "tomato2", 
+          "tan2", 
+          "orange3", #bacteroidetes
+          "khaki1",
+          "darkolivegreen4",
+          "darkgreen",
+          "green4",
+          "palegreen3",
+          "white",
+          "white",
+          "white",
+          "white",
+          "white",
+          "white",
+          "white",
+          "white")
+
+plot_bar(ps.phylum, fill="Phylum") + facet_grid(~Location, scales= "free_x", space="free_x") + scale_fill_manual(values=MyPalette) # appearance composition
+
+# All Phyla included
+
+plot_bar(ps.phylum, fill="Phylum") + facet_grid(~Location, scales= "free_x", space="free_x") + theme(strip.text.x = element_text(size = 12, face = "bold")) + theme(axis.text.x = element_text(angle = -90, vjust = 1, hjust = 0, size=7, face="bold")) + xlab(NULL) + ylab(NULL) + theme(legend.text = element_text(size = 8),legend.title = element_text(size = 10, face = "bold"))
+
+# Only Phyla with more than 0.01% of read abundance
+
+#Pallete 1 
+plot_bar(ps.phylum.abund, fill="Phylum") + facet_grid(~Location, scales= "free_x", space="free_x")  + scale_fill_brewer(palette="Paired") + theme(strip.text.x = element_text(size = 12, face = "bold")) + theme(axis.text.x = element_text(angle = -90, vjust = 1, hjust = 0, size=7, face="bold")) + xlab(NULL) + ylab(NULL) + theme(legend.text = element_text(size = 8),legend.title = element_text(size = 10, face = "bold"))
+
+#Pallete 2
+plot_bar(ps.phylum.abund, fill="Phylum") + facet_grid(~Location, scales= "free_x", space="free_x")  + theme(strip.text.x = element_text(size = 12, face = "bold")) + theme(axis.text.x = element_text(angle = -90, vjust = 1, hjust = 0, size=7, face="bold")) + xlab(NULL) + ylab(NULL) + theme(legend.text = element_text(size = 8),legend.title = element_text(size = 10, face = "bold"))
+
+```
+
+# Plot Abundances Class
+```{r, echo=FALSE}
+plot_bar(ps.muriqui.rarefied, fill="Class")
+plot_bar(ps.muriqui.rarefied, fill="Class") + facet_wrap(~Location, scales="free_x", nrow=1)
+
+plot_bar(ps.muriqui.rarefied.abund, fill="Class") + facet_wrap(~Location, scales="free_x", nrow=1)
+
+#We can merge SVs at the Class level and build a new phyloseq object - it merges the SVs with the same taxonomy and sum the abundances
+
+ps.class = tax_glom(ps.muriqui.rarefied.abund, taxrank="Class", NArm=F)
+ps.class
+
+
+
+plot_bar(ps.class, fill="Class") + facet_wrap(~Location, scales= "free_x", nrow=1) 
+plot_bar(ps.class, fill="Class") + facet_grid(~Location, scales= "free_x", space="free_x") + theme(strip.text.x = element_text(size = 10, face = "bold"))
+
+
+plot_bar(ps.class, fill="Class") + facet_grid(~Location, scales= "free_x", space="free_x") + theme(strip.text.x = element_text(size = 12, face = "bold")) + theme(axis.text.x = element_text(angle = -90, vjust = 1, hjust = 0, size=7, face="bold")) + xlab(NULL) + ylab(NULL) + theme(legend.text = element_text(size = 7),legend.title = element_text(size = 8, face = "bold"))
+
+```
+#Taxonomy sums
+
+Calculate the number of ASVs per sample and the prevalence of each ASV
+```{r}
+
+asv_df <- t(otu_table(ps.muriqui.rarefied.abund))
+avg_ASV <- colSums(asv_df != 0)
+write.csv(avg_ASV, "/Users/naiara/Desktop/Naiara_DADA2/NEW_Muriqui-data/MS_Other files /2. Spreadsheets/V1- rarefaction /avg_ASV.csv")
+
+prev_asv_df <- otu_table(ps.muriqui.rarefied.abund)
+prev_ASV <- colSums(prev_asv_df != 0)
+write.csv(prev_ASV, "/Users/naiara/Desktop/Naiara_DADA2/NEW_Muriqui-data/MS_Other files /2. Spreadsheets/V1- rarefaction /prev_ASV.csv") 
+```
+```
+
+
+Find the total number of reads per sample and totals for phylum and species level classifications
+
+```{r}
+sample_sums(ps.muriqui.rarefied.abund)
+```
+
+#Alpha diversity
+
+```{r}
+
+ p.alpha <- plot_richness(ps.muriqui.rarefied.abund, x="Sample", color="Location", measures=c("Observed"))
+
+plot_richness(ps.muriqui.rarefied.abund, x="Location", measures=c("Observed", "Shannon", "Chao1", "Simpson")) + geom_boxplot() +theme(axis.text.x = element_text(angle = 90)) # simple version
+
+
+plot_richness(ps.muriqui.rarefied.abund, x="Location", color="Location", measures=c("Observed", "Shannon", "Chao1", "Simpson")) + geom_boxplot() + theme(strip.text.x = element_text(size = 10, face = "bold")) + theme(panel.background = element_rect(fill = "grey96")) #cornsilk2, 
+
+
+rich = estimate_richness(ps.muriqui.rarefied.abund)
+rich
+
+
+# Is there a significant difference between the analysed sites?
+
+#pairwise.wilcox.test(rich$Simpson, sample_data(ps.muriqui.rarefied.abund)$Location) #Useful for related samples-TROJAN data analysis?
+
+
+symnum.args = list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns"))
+
+plot_richness(ps.muriqui.rarefied.abund, x="Location", measures=c("Shannon", "Simpson", "Observed", "Chao1"), color = "Location")+
+  geom_boxplot(alpha=0.6)+ 
+  theme(legend.position="none", axis.text.x=element_text(angle=45,hjust=1,vjust=1,size=7)) +
+  stat_compare_means(method = "t.test", comparisons = list(c("VFP", "VSM")), label = "p.signif", symnum.args = symnum.args)#not very useful in this case due to the statistical test applied 
+
+#ANOVA
+#Shannon
+anova.sh = aov(rich$Shannon ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+summary(anova.sh)
+TukeyHSD(anova.sh)
+
+#Simpson
+anova.sh = aov(rich$Simpson ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+summary(anova.sh)
+TukeyHSD(anova.sh)
+
+#Observed
+anova.sh = aov(rich$Observed ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+summary(anova.sh)
+TukeyHSD(anova.sh)
+
+#Chao1
+anova.sh = aov(rich$Chao1 ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+summary(anova.sh)
+TukeyHSD(anova.sh)
+
+#kruskal.test(rich$Shannon ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+pairwise.wilcox.test(rich$Shannon, sample_data(ps.muriqui.rarefied.abund)$Location, p.adj = "bonf")
+
+#kruskal.test(rich$Observed ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+pairwise.wilcox.test(rich$Observed, sample_data(ps.muriqui.rarefied.abund)$Location, p.adj = "bonf")
+
+#kruskal.test(rich$Simpson ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+pairwise.wilcox.test(rich$Simpson, sample_data(ps.muriqui.rarefied.abund)$Location, p.adj = "bonf")
+
+#kruskal.test(rich$Chao1 ~ sample_data(ps.muriqui.rarefied.abund)$Location)
+pairwise.wilcox.test(rich$Chao1, sample_data(ps.muriqui.rarefied.abund)$Location, p.adj = "bonf")
+
+
+#
+
+
+rich_psR <- estimate_richness(ps.muriqui.rarefied.abund, measures = c("Observed","Shannon", "Chao1", "Simpson"))
+rich <- list(rich_psR, sample_data(ps.muriqui.rarefied.abund)$Sample, sample_data(ps.muriqui.rarefied.abund)$Location) 
+names(rich) <- c("alpha_diversity", "Sample", "Location")
+
+
+if (shapiro.test(rich$alpha_diversity[["Observed"]])$p.value > 0.05)
+{print(summary(aov(rich$alpha_diversity[["Observed"]]~rich$Location, data = rich)))} else {print(kruskal.test(rich$alpha_diversity$Observed, rich$Location))}
+
+if (shapiro.test(rich$alpha_diversity[["Chao1"]])$p.value > 0.05)
+{print(summary(aov(rich$alpha_diversity[["Chao1"]]~rich$Location, data = rich)))} else {print(kruskal.test(rich$alpha_diversity$Chao1, rich$Location))}
+
+if (shapiro.test(rich$alpha_diversity[["Shannon"]])$p.value > 0.05)
+{print(summary(aov(rich$alpha_diversity[["Shannon"]]~rich$Location, data = rich)))} else {print(kruskal.test(rich$alpha_diversity$Shannon, rich$Location))}
+
+if (shapiro.test(rich$alpha_diversity[["Simpson"]])$p.value > 0.05)
+{print(summary(aov(rich$alpha_diversity[["Simpson"]]~rich$Location, data = rich)))} else {print(kruskal.test(rich$alpha_diversity$Simpson, rich$Location))}
+
+
+```
+
+Pairwise testing for significant results using Dunn's test using Benjamini-Hochberg adjustment
+# For significant Kruskal-Wallis (non-parametric) results
+
+```{r  results=F, message=F, warning=F}
+library(dunn.test); packageVersion("dunn.test")
+
+
+dunn.test(rich$alpha_diversity$Observed, rich$Location, method = "bh")
+
+dunn.test(rich$alpha_diversity$Shannon, rich$Location, method = "bh")
+
+dunn.test(rich$alpha_diversity$Chao1, rich$Location, method = "bh")
+
+dunn.test(rich$alpha_diversity$Simpson, rich$Location, method = "bh")
+
+
+
+```
+
+
+
+## Create a random phylogenetic tree 
+```{r}
+library("ape")
+random_tree = rtree(ntaxa(ps.muriqui.rarefied.abund), rooted=TRUE, tip.label=taxa_names(ps.muriqui.rarefied.abund))
+plot(random_tree)
+
+physeq1 = merge_phyloseq(ps.muriqui.rarefied.abund, sample_data, random_tree)
+physeq1
+```
+
+## Beta diversity - PCoA
+
+```{r}
+# Unweighted Unifrac distance
+uwunifrac_dist = phyloseq::distance(physeq1, method="unifrac", weighted=F)
+ordination = ordinate(physeq1, method="PCoA", distance=uwunifrac_dist)
+uwunifrac_ordiplot <- plot_ordination(physeq1, ordination, color="Location") + theme(aspect.ratio=1) #+ geom_polygon(aes(fill=Location)) #remove geom_polygon to keep only the points 
+
+uwunifrac_ordiplot + 
+  #stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t", geom = "polygon", alpha=0.4, aes(fill=Location)) +
+  theme_bw()
+
+
+#adonis(uwunifrac_dist ~ sample_data(physeq1)$Location, permutations = 999)
+anosim(uwunifrac_dist, sample_data(physeq1)$Location, permutations = 999)
+
+
+# Weighted Unifrac distance
+wunifrac_dist = phyloseq::distance(physeq1, method="unifrac", weighted=T)
+ordination = ordinate(physeq1, method="PCoA", distance=wunifrac_dist)
+wunifrac_ordiplot <- plot_ordination(physeq1, ordination, color="Location") + theme(aspect.ratio=1) # + geom_polygon(aes(fill=Location)) #remove geom_polygon to keep only the points 
+
+wunifrac_ordiplot + 
+  #stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t", geom = "polygon", alpha=0.4, aes(fill=Location)) +
+  theme_bw()
+
+#adonis(wunifrac_dist ~ sample_data(physeq1)$Location, permutations = 999)
+anosim(wunifrac_dist, sample_data(physeq1)$Location, permutations = 999)
+
+
+
+# Bray-curtis distance
+bray_dist = phyloseq::distance(physeq1, method="bray")
+ordination = ordinate(physeq1, method="PCoA", distance=bray_dist)
+bray_ordiplot <- plot_ordination(physeq1, ordination, color="Location") + theme(aspect.ratio=1) 
+
+bray_ordiplot + 
+  #stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t", geom = "polygon", alpha=0.4, aes(fill=Location)) +
+  theme_bw()
+
+#adonis(bray_dist ~ sample_data(physeq1)$Location, permutations = 999)
+anosim(bray_dist, sample_data(physeq1)$Location, permutations = 999)
+
+```
+
+## PERMANOVA
+```{r}
+permanova.dis.bray <- phyloseq::distance(physeq1, "bray")
+vegan::adonis2(permanova.dis.bray ~ Location, as(sample_data(ps.muriqui.rarefied.abund), "data.frame"), permutations = 9999)
+
+permanova.dis.wu <- phyloseq::distance(physeq1, "unifrac", weighted=T)
+vegan::adonis2(permanova.dis.wu ~ Location, as(sample_data(ps.muriqui.rarefied.abund), "data.frame"), permutations = 9999)
+
+permanova.dis.u <- phyloseq::distance(physeq1, "unifrac", weighted=F)
+vegan::adonis2(permanova.dis.u ~ Location, as(sample_data(ps.muriqui.rarefied.abund), "data.frame"), permutations = 9999)
+
+```
+
+
+
+## Beta dispersion
+
+```{r}
+#Calculate dispersion (variances) within each group.
+#Before running PERMANOVA, you must run the betadisper->permutest to know if the dispersions are the same. For that to be true, the permutest has to have a non-significant p-value. You may have the centroids of two groups in NMS at a very similar position in the ordination space, but if their dispersions are quite different, adonis will give you a significant p-value, thus, the result is heavily influenced not by the difference in composition between groups but by differences in composition within groups (heterogeneous dispersion, and thus a measure of betadiversity).
+
+disp.bray = betadisper(bray_dist, sample_data(physeq1)$Location)
+permutest(disp.bray, pairwise=TRUE, permutations=999)
+
+disp.uwuni = betadisper(uwunifrac_dist, sample_data(physeq1)$Location)
+permutest(disp.uwuni, pairwise=TRUE, permutations=999)
+
+disp.wuni = betadisper(wunifrac_dist, sample_data(physeq1)$Location)
+permutest(disp.wuni, pairwise=TRUE, permutations=999)
+```
+
+## Beta diversity - nMDs
+
+### nMDS cannot be used as there are few points to calculate. 
+
+```{r}
+
+# Bray-curtis distance
+bray_dist = phyloseq::distance(physeq1, method="bray")
+ordination = ordinate(physeq1, method="NMDS", distance=bray_dist)
+bray_ordiplot <- plot_ordination(physeq1, ordination, color="Location") + theme(aspect.ratio=1) 
+
+bray_ordiplot + 
+  #stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t", geom = "polygon", alpha=0.4, aes(fill=Location)) +
+  theme_bw()
+
+#adonis(bray_dist ~ sample_data(physeq1)$Location, permutations = 999)
+
+anosim(bray_dist, sample_data(physeq1)$Location, permutations = 999)
+
+
+#NMDS <- metaMDS(otu_table(physeq1), distance = "bray", k=5)
+
+```
+
+
+#Genetics vs alpha diversity 
+```{r}
+setwd("~/Desktop/Naiara_DADA2/NEW_Muriqui-data/")
+
+#Load Data
+genetic2 <- read.csv("MS_Other files /2. Spreadsheets/GD-RAREFIED_Genetic diversity-haplotypes and microbiome.csv")#Genetic-diversity_Haplotypes.csv
+
+
+#ANOVA
+#aov <- aov(Observed~Group, data=genetic2) #change alpha diversity index for each
+#summary(aov)
+
+
+#Correlation between Ho and Alpha diversity
+
+cor.test(genetic2$Ho, genetic2$Observed,
+         method = "pearson")
+
+cor.test(genetic2$Ho, genetic2$Shannon,
+         method = "pearson")
+
+cor.test(genetic2$Ho, genetic2$Chao1,
+         method = "pearson")
+
+cor.test(genetic2$Ho, genetic2$Simpson,
+         method = "pearson")
+
+
+
+
+#Correlation between HL and Alpha diversity
+
+cor.test(genetic2$HL, genetic2$Observed,
+         method = "pearson")
+
+cor.test(genetic2$HL, genetic2$Shannon,
+         method = "pearson")
+
+cor.test(genetic2$HL, genetic2$Chao1,
+         method = "pearson")
+
+cor.test(genetic2$HL, genetic2$Simpson,
+         method = "pearson")
+```
+
+
+# Mantel test - genetic distances (Genalex) vs beta diversity (Bray and UniFrac)
+# more info https://jkzorz.github.io/2019/07/08/mantel-test.html
+```{r}
+
+genetic_dist <- read.table("MS_Other files /2. Spreadsheets/GD_Sept22-53ind.txt")#genetic_diversity.csv
+genetic_dist_lin <- read.table("MS_Other files /2. Spreadsheets/Linear_GD_Sep22.txt")
+
+#Genetic distance matrix
+dgen <- genetic_dist
+dgen1 <- genetic_dist_lin
+
+#Unweighted UniFrac
+uw <- as.matrix(uwunifrac_dist) #get the dist values from beta diversity analyses and convert to a matrix format
+mantel(dgen, uw, permutations = 999, method = "spearman")  
+
+
+#Weighted UniFrac
+w <- as.matrix(wunifrac_dist) #get the dist values from beta diversity analyses and convert to a matrix format
+mantel(dgen, w, permutations = 999, method = "spearman") 
+
+# Bray-curtis
+
+bray <- as.matrix(bray_dist) #get the dist values from beta diversity analyses and convert to a matrix format
+mantel (bray, dgen, permutations = 999, method="spearman")                  
+
+test <- mantel (bray, dgen, permutations = 999, method="spearman")   
+```
+
+
+
+
+
