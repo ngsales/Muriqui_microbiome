@@ -1,0 +1,81 @@
+---
+title: "Deseq2_new analysis"
+author: "Naiara Sales"
+date: "2023-12-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("phyloseq")
+library("DESeq2"); packageVersion("DESeq2")
+library("metagMisc")
+library(microbiome)
+```
+
+```{r}
+muriqui <- ps_muriqui_filtered
+muriqui
+head(sample_data(muriqui)$Location, 25)
+
+muriqui = subset_samples(muriqui, Location!="I") #removed samples from the isolated individuals 
+
+sample_sums(muriqui)
+hist(sample_sums(muriqui))
+muriqui <- subset_samples(muriqui, Sample!="MC32" & Sample!="MC103"  & Sample!="MC10")
+
+
+sort(taxa_sums(muriqui))
+sum(taxa_sums(muriqui))
+
+muriqui
+```
+
+# Prevalence filtering
+```{r}
+#muriqui <- prune_taxa(taxa_sums(muriqui) > 5, muriqui) #remove taxa ASVs with <X reads 
+
+#muriqui_prev <- filter_taxa(muriqui, function(x){sum(x > 0) > 25}, prune = TRUE)
+#muriqui_prev <- prune_taxa(taxa_sums(muriqui) >= 6, muriqui)
+
+muriqui <- tax_glom(muriqui, taxrank = 'Species', NArm = FALSE) #group ASVs at genus level
+
+prev_filt <- core(muriqui, detection=0.1/100, prevalence=30/100)
+prev_filt
+
+
+```
+
+```{r}
+
+muriqui
+x1 <- tax_glom(muriqui, taxrank="Species")# This has worked fine by combining the same species
+
+diagdds = phyloseq_to_deseq2(muriqui_prev, ~Location)
+diagdds = DESeq(diagdds, test="Wald", fitType="parametric")
+
+
+#x1 <- tax_glom(muriqui, taxrank="Genus")# This has worked fine by combining the same species
+```
+
+```{r}
+library(GUniFrac)
+library(mia)
+library(tidyverse)
+
+# Agglomerate by genus and subset by prevalence
+subsetByPrevalentFeatures(muriqui,
+                             rank = "Genus",
+                             prevalence = 10 / 100)
+
+# Transform count assay to relative abundances
+tse <- transformAssay(tse,
+                      assay.type = "counts",
+                      method = "relabundance")
+
+```
+
+
